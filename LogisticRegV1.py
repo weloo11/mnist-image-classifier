@@ -129,7 +129,7 @@ for epoch in range(epochs):
     y_pred = predict_probability(X_train, W, b)
 
     # Loss
-    train_loss = compute_loss(y_train_binary, y_pred)
+    train_loss = comput_loss(y_train_binary, y_pred)
 
     # Error
     error = y_pred - y_train_binary
