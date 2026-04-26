@@ -75,7 +75,6 @@ def preprocess_mnist(
 
     return X_train, y_train, X_val, y_val, X_test, y_test
 
-
 def flatten_features(images):
     return images.reshape(images.shape[0], -1)
 
