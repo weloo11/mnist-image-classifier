@@ -73,7 +73,7 @@ def preprocess_mnist(
     X_val = (X_val - mean) / std
     X_test = (X_test - mean) / std
 
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train, y_train, X_val, y_val, X_test, y_test, mean, std
 
 def flatten_features(images):
     return images.reshape(images.shape[0], -1)
@@ -107,7 +107,7 @@ for method in ["flatten", "pca", "hog"]:
     print("Method:", method)
     print("==============================")
 
-    X_train, y_train, X_val, y_val, X_test, y_test = preprocess_mnist(
+    X_train, y_train, X_val, y_val, X_test, y_test,mean,std = preprocess_mnist(
         target_digit=5,
         method=method,
         pca_components=100
