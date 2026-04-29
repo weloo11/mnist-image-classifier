@@ -45,7 +45,7 @@ def run_method(preprocessing, method, target_digit, pca_components):
         target_digit=target_digit,
         method=method,
         pca_components=pca_components,
-        val_ratio=0.1
+        val_ratio=0.15
     )
 
     print(f"  Shapes -> Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
