@@ -38,27 +38,62 @@ def print_metrics(split, metrics):
         print_confusion_matrix(m['tp'], m['tn'], m['fp'], m['fn'])
 
 
-def run_method(preprocessing, method, target_digit, pca_components):
+def kfold_cross_validate(X, y, k=5):
     from gaussian_nb import GaussianNaiveBayes, evaluate
 
-    X_train, y_train, X_val, y_val, X_test, y_test = preprocessing.preprocess_mnist(
+    n = len(y)
+    indices = np.arange(n)
+    fold_size = n // k
+    metric_keys = ["accuracy", "precision", "recall", "f1"]
+    fold_metrics = {key: [] for key in metric_keys}
+
+    for i in range(k):
+        val_idx = indices[i * fold_size: (i + 1) * fold_size]
+        train_idx = np.concatenate([indices[:i * fold_size], indices[(i + 1) * fold_size:]])
+
+        model = GaussianNaiveBayes()
+        model.fit(X[train_idx], y[train_idx])
+        y_pred = model.predict(X[val_idx])
+        m = evaluate(y[val_idx], y_pred)
+
+        for key in metric_keys:
+            fold_metrics[key].append(m[key])
+
+    return {key: (np.mean(fold_metrics[key]), np.std(fold_metrics[key])) for key in metric_keys}
+
+
+def run_method(preprocessing, method, target_digit, pca_components, k_folds=5):
+    from gaussian_nb import GaussianNaiveBayes, evaluate
+
+    X_train, y_train, X_val, y_val, X_test, y_test, _, _ = preprocessing.preprocess_mnist(
         target_digit=target_digit,
         method=method,
         pca_components=pca_components,
-        val_ratio=0.1
+        val_ratio=0.15
     )
 
     print(f"  Shapes -> Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
-    model = GaussianNaiveBayes()
-    model.fit(X_train, y_train)
+    # K-Fold CV on combined train+val data
+    X_cv = np.concatenate([X_train, X_val], axis=0)
+    y_cv = np.concatenate([y_train, y_val], axis=0)
+    cv_results = kfold_cross_validate(X_cv, y_cv, k=k_folds)
+    print(f"\n  {k_folds}-Fold Cross-Validation (mean ± std):")
+    for key, (mean, std) in cv_results.items():
+        print(f"    {key:<10}: {mean:.4f} ± {std:.4f}")
 
+    # Final evaluation on held-out test set
+    model = GaussianNaiveBayes()
+    model.fit(X_cv, y_cv)
+
+    print("\n  Final evaluation:")
     results = {}
-    for split, X, y in [("Train", X_train, y_train), ("Val", X_val, y_val), ("Test", X_test, y_test)]:
+    for split, X, y in [("Train+Val", X_cv, y_cv), ("Test", X_test, y_test)]:
         y_pred = model.predict(X)
         results[split] = evaluate(y, y_pred)
         print_metrics(split, results[split])
 
+    results["CV"] = cv_results
     return results
 
 
@@ -77,15 +112,16 @@ def main():
         summary[method] = run_method(preprocessing, method, TARGET_DIGIT, PCA_COMPONENTS)
 
     # Comparison table
-    print(f"\n{'='*50}")
-    print("  SUMMARY (Test Set)")
-    print(f"{'='*50}")
-    print(f"  {'Method':<10} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10}")
-    print(f"  {'-'*50}")
+    print(f"\n{'='*60}")
+    print("  SUMMARY")
+    print(f"{'='*60}")
+    print(f"  {'Method':<10} {'CV Acc (mean±std)':>20} {'Test Acc':>10} {'Test F1':>10}")
+    print(f"  {'-'*55}")
     for method, results in summary.items():
-        m = results["Test"]
-        print(f"  {method:<10} {m['accuracy']:>10.4f} {m['precision']:>10.4f}"
-              f" {m['recall']:>10.4f} {m['f1']:>10.4f}")
+        test = results["Test"]
+        cv_mean, cv_std = results["CV"]["accuracy"]
+        print(f"  {method:<10} {f'{cv_mean:.4f}±{cv_std:.4f}':>20}"
+              f" {test['accuracy']:>10.4f} {test['f1']:>10.4f}")
 
 
 if __name__ == "__main__":
