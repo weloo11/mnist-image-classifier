@@ -74,7 +74,6 @@ def run_method(preprocessing, method, target_digit, pca_components, k_folds=5):
 
     print(f"  Shapes -> Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
-    # K-Fold CV on combined train+val data
     X_cv = np.concatenate([X_train, X_val], axis=0)
     y_cv = np.concatenate([y_train, y_val], axis=0)
     cv_results = kfold_cross_validate(X_cv, y_cv, k=k_folds)
@@ -82,7 +81,6 @@ def run_method(preprocessing, method, target_digit, pca_components, k_folds=5):
     for key, (mean, std) in cv_results.items():
         print(f"    {key:<10}: {mean:.4f} ± {std:.4f}")
 
-    # Final evaluation on held-out test set
     model = GaussianNaiveBayes()
     model.fit(X_cv, y_cv)
 
@@ -111,7 +109,6 @@ def main():
         print(f"{'='*50}")
         summary[method] = run_method(preprocessing, method, TARGET_DIGIT, PCA_COMPONENTS)
 
-    # Comparison table
     print(f"\n{'='*60}")
     print("  SUMMARY")
     print(f"{'='*60}")
