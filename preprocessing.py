@@ -10,20 +10,18 @@ def preprocess_mnist(
     pca_components=100,
     val_ratio=0.15
 ):
-    # Load data
+    
     (x_train, y_train), (x_test, y_test) = mnist.load_data()
 
-    # Labels:
-    # target digit -> 1
-    # all others -> 0
+   
     y_train = np.where(y_train == target_digit, 1, 0)
     y_test = np.where(y_test == target_digit, 1, 0)
 
-    # Normalize images
+   
     x_train = x_train.astype(np.float64) / 255.0
     x_test = x_test.astype(np.float64) / 255.0
 
-    # Shuffle and split train/validation
+  
     np.random.seed(42)
     indices = np.random.permutation(len(x_train))
 
@@ -38,7 +36,7 @@ def preprocess_mnist(
     x_train = x_train[val_size:]
     y_train = y_train[val_size:]
 
-    # Feature extraction
+    
     if method == "flatten":
         X_train = flatten_features(x_train)
         X_val = flatten_features(x_val)
@@ -65,7 +63,7 @@ def preprocess_mnist(
     else:
         raise ValueError("method must be 'flatten', 'pca', or 'hog'")
 
-    # Standardization
+   
     mean = np.mean(X_train, axis=0)
     std = np.std(X_train, axis=0) + 1e-8
 
@@ -98,9 +96,7 @@ def hog_features_dataset(images):
     return np.array(features)
 
 
-# ==========================================================
-# TEST PREPROCESSING METHODS
-# ==========================================================
+
 
 if __name__ == "__main__":
     for method in ["flatten", "pca", "hog"]:
@@ -118,3 +114,4 @@ if __name__ == "__main__":
         print("X_val:", X_val.shape)
         print("X_test:", X_test.shape)
         print("y_train:", y_train.shape)
+        
