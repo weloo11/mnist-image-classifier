@@ -102,18 +102,19 @@ def hog_features_dataset(images):
 # TEST PREPROCESSING METHODS
 # ==========================================================
 
-for method in ["flatten", "pca", "hog"]:
-    print("\n==============================")
-    print("Method:", method)
-    print("==============================")
+if __name__ == "__main__":
+    for method in ["flatten", "pca", "hog"]:
+        print("\n==============================")
+        print("Method:", method)
+        print("==============================")
 
-    X_train, y_train, X_val, y_val, X_test, y_test,mean,std = preprocess_mnist(
-        target_digit=5,
-        method=method,
-        pca_components=100
-    )
+        X_train, y_train, X_val, y_val, X_test, y_test, mean, std = preprocess_mnist(
+            target_digit=5,
+            method=method,
+            pca_components=100
+        )
 
-    print("X_train:", X_train.shape)
-    print("X_val:", X_val.shape)
-    print("X_test:", X_test.shape)
-    print("y_train:", y_train.shape)
+        print("X_train:", X_train.shape)
+        print("X_val:", X_val.shape)
+        print("X_test:", X_test.shape)
+        print("y_train:", y_train.shape)
