@@ -1,0 +1,2 @@
+Model,Feature Method,Dataset,Image Size,Best Learning Rate,Best Lambda,Cross Validation,Validation Accuracy,Validation Macro Precision,Validation Macro Recall,Validation Macro F1,Test Accuracy,Test Macro Precision,Test Macro Recall,Test Macro F1
+Multiclass One-vs-Rest Linear SVM,Pretrained CNN Features - MobileNetV2,Full MNIST,64,0.02,0.001,3-Fold CV,0.9344,0.9333,0.9334,0.9333,0.9382,0.9375,0.937,0.9371
