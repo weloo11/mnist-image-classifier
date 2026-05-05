@@ -1,7 +1,7 @@
-import keras
+#import keras
 import matplotlib.pyplot as plt
-
-(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+from tensorflow.keras.datasets import mnist
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
 
 fig, axes = plt.subplots(1, 10, figsize=(12, 3))
 
