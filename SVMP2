@@ -3,7 +3,7 @@
 # Full Dataset Local Version
 #
 # Improvements:
-# 1. Pretrained CNN Feature Extraction using MobileNetV2
+# 1. Pretrained CNN Feature Extraction using VGG16
 # 2. Hyperparameter Tuning with K-Fold Cross-Validation
 # 3. Regularization + Bias-Variance Analysis + Learning Curves
 #
@@ -21,8 +21,8 @@ import os
 
 import keras
 from keras.datasets import mnist
-from keras.applications import MobileNetV2
-from keras.applications.mobilenet_v2 import preprocess_input
+from keras.applications import VGG16
+from keras.applications.vgg16 import preprocess_input
 
 import tensorflow as tf
 
@@ -186,9 +186,9 @@ def extract_cnn_features(
     prepare_batch_size=128,
     predict_batch_size=32
 ):
-    print("\nLoading pretrained MobileNetV2...")
+    print("\nLoading pretrained VGG16...")
 
-    feature_extractor = MobileNetV2(
+    feature_extractor = VGG16(
         weights="imagenet",
         include_top=False,
         pooling="avg",
@@ -232,6 +232,9 @@ def extract_cnn_features(
     gc.collect()
 
     return X_train, X_val, X_test
+
+
+
 
 
 # ============================================================
@@ -1244,7 +1247,7 @@ bias_variance_df.to_csv(
 summary_table = pd.DataFrame([
     {
         "Model": "Multiclass One-vs-Rest Linear SVM",
-        "Feature Method": "Pretrained CNN Features - MobileNetV2",
+        "Feature Method": "Pretrained CNN Features - " + VGG16.__name__ if not USE_SUBSET else "Pretrained CNN Features - " + VGG16.__name__ + " (Subset)",
         "Dataset": "Full MNIST" if not USE_SUBSET else "Subset",
         "Image Size": IMAGE_SIZE,
         "Best Learning Rate": best_config["learning_rate"],
