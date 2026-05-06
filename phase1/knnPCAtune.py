@@ -73,8 +73,8 @@ def f1_score_manual(y_true, y_pred):
 def main():
     target_digit = 5
     val_subset_size = 500
-    pca_components_list = [ 100]
-    k_values = [3]
+    pca_components_list = [ 20 , 50 ,75,100]
+    k_values = [1, 3, 5, 7, 9, 11]
 
     best_overall = None
     all_results = []
