@@ -140,7 +140,7 @@ def kfold_cross_validate(X, y, k=5, var_smoothing=1e-8):
     }
 
 
-def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method):
+def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method, output_dir="."):
     """Train on increasing fractions of training data; plot train vs val F1."""
     from gaussian_nb import GaussianNaiveBayes
 
@@ -167,7 +167,7 @@ def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method):
     plt.title(f"Learning Curves — {method.upper()} (var_smoothing={var_smoothing:.0e})")
     plt.legend()
     plt.tight_layout()
-    fname = f"nb2_learning_curve_{method}.png"
+    fname = f"{output_dir}/nb2_learning_curve_{method}.png"
     plt.savefig(fname)
     plt.close()
     print(f"  Learning curve saved -> {fname}")
@@ -183,7 +183,7 @@ def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method):
     return {"train_f1": train_f1s, "val_f1": val_f1s, "sizes": sizes, "diagnosis": diagnosis}
 
 
-def bias_variance_analysis(X_train, y_train, X_val, y_val, method):
+def bias_variance_analysis(X_train, y_train, X_val, y_val, method, output_dir="."):
     """Sweep var_smoothing over a wide range; plot train vs val F1 to show bias-variance tradeoff."""
     from gaussian_nb import GaussianNaiveBayes
 
@@ -209,14 +209,14 @@ def bias_variance_analysis(X_train, y_train, X_val, y_val, method):
     plt.title(f"Bias-Variance Analysis — {method.upper()}")
     plt.legend()
     plt.tight_layout()
-    fname = f"nb2_bias_variance_{method}.png"
+    fname = f"{output_dir}/nb2_bias_variance_{method}.png"
     plt.savefig(fname)
     plt.close()
     print(f"  Bias-variance plot saved -> {fname}")
     return {"smoothing_values": smoothing_values, "train_f1": train_f1s, "val_f1": val_f1s}
 
 
-def run_method(preprocessing, method, pca_components, k_folds=5):
+def run_method(preprocessing, method, pca_components, k_folds=5, output_dir="."):
     from gaussian_nb import GaussianNaiveBayes
 
     result = preprocessing.preprocess_mnist_multiclass(
@@ -256,12 +256,12 @@ def run_method(preprocessing, method, pca_components, k_folds=5):
 
     print("\n  --- Learning Curves ---")
     results["learning_curves"] = plot_learning_curves(
-        X_train, y_train, X_val, y_val, best_vs, method
+        X_train, y_train, X_val, y_val, best_vs, method, output_dir
     )
 
     print("\n  --- Bias-Variance Analysis ---")
     results["bias_variance"] = bias_variance_analysis(
-        X_train, y_train, X_val, y_val, method
+        X_train, y_train, X_val, y_val, method, output_dir
     )
 
     return results
@@ -271,6 +271,10 @@ def main():
     PCA_COMPONENTS = 100
     METHODS        = ["flatten", "pca", "hog"]
     K_FOLDS        = 5
+    OUTPUT_DIR     = "phase2_nb_outputs"
+
+    import os
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     preprocessing = ensure_preprocessing()
 
@@ -279,7 +283,7 @@ def main():
         print(f"\n{'='*60}")
         print(f"  Method: {method.upper()}")
         print(f"{'='*60}")
-        summary[method] = run_method(preprocessing, method, PCA_COMPONENTS, K_FOLDS)
+        summary[method] = run_method(preprocessing, method, PCA_COMPONENTS, K_FOLDS, OUTPUT_DIR)
 
     print(f"\n{'='*72}")
     print("  SUMMARY — Phase 2 Multiclass Gaussian Naive Bayes (10 Classes)")
