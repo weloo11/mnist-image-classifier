@@ -1,2 +1,0 @@
-Model,Feature Method,Best Learning Rate,Best Lambda,Validation Accuracy,Validation Macro F1,Test Accuracy,Test Macro F1
-Multiclass One-vs-Rest Linear SVM,VGG16 CNN Features,0.02,0.001,0.9559755419677599,0.9553429346811881,0.9575,0.9571244775564887
