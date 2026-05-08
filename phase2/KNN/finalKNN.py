@@ -203,7 +203,7 @@ def print_results(title, y_true, y_pred, n_classes=10):
     mean, std,
     x_train_raw, x_val_raw, x_test_raw
 ) = preprocess_mnist_multiclass(
-    method="pca",                 # placeholder
+    method="flatten",                 # placeholder
     pca_components=BEST_PCA_COMPONENTS,
     val_ratio=VAL_RATIO
 )
@@ -260,13 +260,3 @@ final_results = print_results(
     y_pred=y_test_pred,
     n_classes=10
 )
-
-
-# ==========================================================
-# 10) OPTIONAL: SAVE PREDICTIONS / RESULTS SUMMARY
-# ==========================================================
-# Uncomment if you want to save predictions for later analysis
-# np.save("y_test_true.npy", y_test)
-# np.save("y_test_pred.npy", y_test_pred)
-
-print("\nFinal model evaluation completed successfully.")
