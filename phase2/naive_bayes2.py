@@ -1,29 +1,19 @@
 import contextlib
 import importlib
 import io
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'phase1'))
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-def ensure_preprocessing():
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            import preprocessing2
-        return preprocessing2
-    except Exception as e:
-        print("preprocessing2 import failed:", e)
-        print("Installing required packages: tensorflow, scikit-image, scikit-learn")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install",
-            "tensorflow", "scikit-image", "scikit-learn"
-        ])
-        importlib.invalidate_caches()
-        with contextlib.redirect_stdout(io.StringIO()):
-            return importlib.import_module("preprocessing2")
+
 
 
 def multiclass_evaluate(y_true, y_pred, n_classes=10):
@@ -273,10 +263,15 @@ def main():
     K_FOLDS        = 5
     OUTPUT_DIR     = "phase2_nb_outputs"
 
-    import os
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    preprocessing = ensure_preprocessing()
+    import importlib.util, pathlib
+    _spec = importlib.util.spec_from_file_location(
+        "preprocessing2",
+        pathlib.Path(__file__).parent / "preprocessing2.py"
+    )
+    preprocessing = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(preprocessing)
 
     summary = {}
     for method in METHODS:
