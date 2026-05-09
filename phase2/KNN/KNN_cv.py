@@ -366,20 +366,7 @@ def tune_knn_with_5fold_cv():
             f"WeightedF1={r['weighted_f1_mean']:.4f}±{r['weighted_f1_std']:.4f}"
         )
 
-    print("\n" + "=" * 75)
-    print("BEST CONFIGURATION")
-    print("=" * 75)
-    print(f"PCA components : {best_result['pca_components']}")
-    print(f"k              : {best_result['k']}")
-    print(f"Accuracy       : {best_result['accuracy_mean']:.4f} ± {best_result['accuracy_std']:.4f}")
-    print(f"Macro F1       : {best_result['macro_f1_mean']:.4f} ± {best_result['macro_f1_std']:.4f}")
-    print(f"Weighted F1    : {best_result['weighted_f1_mean']:.4f} ± {best_result['weighted_f1_std']:.4f}")
-
     return best_result, all_results
 
-
-# ==========================================================
-# 8) RUN THE TUNING
-# ==========================================================
 if __name__ == "__main__":
     best_result, all_results = tune_knn_with_5fold_cv()
