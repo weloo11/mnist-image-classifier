@@ -1,12 +1,12 @@
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
 from sklearn.decomposition import PCA
-from sklearn.metrics import accuracy_score, f1_score
 import sys
 import os
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
+
 from preprocessing2 import preprocess_mnist_multiclass
 
 
@@ -24,29 +24,18 @@ class KNNVectorized:
         self.y_train = None
 
     def fit(self, X, y):
-        """
-        KNN does not learn weights.
-        It only stores the training data.
-        """
         self.X_train = X.astype(np.float32)
         self.y_train = y.astype(int)
 
     def predict(self, X):
-        """
-        Predict each sample by:
-        1) computing distance to all training samples
-        2) selecting the k nearest neighbors
-        3) taking the majority class among them
-        """
         predictions = []
 
-        for i, x in enumerate(X):
+        for x in X:
             distances = np.sqrt(np.sum((self.X_train - x) ** 2, axis=1))
             k_indices = np.argsort(distances)[:self.k]
             k_labels = self.y_train[k_indices]
 
-            # Majority vote
-            pred = np.bincount(k_labels).argmax()
+            pred = np.bincount(k_labels, minlength=10).argmax()
             predictions.append(pred)
 
         return np.array(predictions, dtype=int)
@@ -67,24 +56,16 @@ def flatten_features(images):
 # ==========================================================
 def fit_transform_pca_fold(x_train_raw, x_val_raw, pca_components):
     """
-    This function does the preprocessing INSIDE each CV fold.
-
-    Why?
-    Because PCA and scaling must be fit on fold-train only,
-    then applied to fold-validation.
-    Otherwise, we leak validation information into training.
+    Fit PCA and scaling on fold-train only, then apply to fold-validation.
+    This avoids data leakage.
     """
-
-    # Step A: flatten images first
     X_train_flat = flatten_features(x_train_raw)
     X_val_flat = flatten_features(x_val_raw)
 
-    # Step B: fit PCA only on fold-train
     pca = PCA(n_components=pca_components)
     X_train = pca.fit_transform(X_train_flat)
     X_val = pca.transform(X_val_flat)
 
-    # Step C: standardize using fold-train statistics only
     mean = np.mean(X_train, axis=0)
     std = np.std(X_train, axis=0) + 1e-8
 
@@ -95,7 +76,126 @@ def fit_transform_pca_fold(x_train_raw, x_val_raw, pca_components):
 
 
 # ==========================================================
-# 4) ONE FULL 5-FOLD CV RUN FOR ONE PARAMETER COMBINATION
+# 4) MANUAL MULTICLASS METRICS
+# ==========================================================
+def confusion_matrix_multiclass(y_true, y_pred, n_classes=10):
+    cm = np.zeros((n_classes, n_classes), dtype=int)
+
+    for t, p in zip(y_true, y_pred):
+        cm[int(t), int(p)] += 1
+
+    return cm
+
+
+def multiclass_metrics(y_true, y_pred, n_classes=10):
+    """
+    Computes:
+    - accuracy
+    - macro precision / recall / f1
+    - weighted precision / recall / f1
+    - confusion matrix
+    """
+    cm = confusion_matrix_multiclass(y_true, y_pred, n_classes=n_classes)
+
+    per_class_precision = []
+    per_class_recall = []
+    per_class_f1 = []
+    supports = []
+
+    for c in range(n_classes):
+        tp = cm[c, c]
+        fp = np.sum(cm[:, c]) - tp
+        fn = np.sum(cm[c, :]) - tp
+        support = np.sum(cm[c, :])
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+
+        per_class_precision.append(precision)
+        per_class_recall.append(recall)
+        per_class_f1.append(f1)
+        supports.append(support)
+
+    per_class_precision = np.array(per_class_precision, dtype=np.float64)
+    per_class_recall = np.array(per_class_recall, dtype=np.float64)
+    per_class_f1 = np.array(per_class_f1, dtype=np.float64)
+    supports = np.array(supports, dtype=np.float64)
+
+    accuracy = np.mean(y_true == y_pred)
+
+    macro_precision = np.mean(per_class_precision)
+    macro_recall = np.mean(per_class_recall)
+    macro_f1 = np.mean(per_class_f1)
+
+    total_support = np.sum(supports)
+    weighted_precision = np.sum(per_class_precision * supports) / total_support
+    weighted_recall = np.sum(per_class_recall * supports) / total_support
+    weighted_f1 = np.sum(per_class_f1 * supports) / total_support
+
+    return {
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
+        "weighted_f1": weighted_f1,
+        "confusion_matrix": cm
+    }
+
+
+# ==========================================================
+# 5) MANUAL STRATIFIED K-FOLD SPLIT
+# ==========================================================
+def stratified_kfold_indices(y, n_splits=5, random_state=42):
+    """
+    Manual replacement for StratifiedKFold.
+
+    What it does:
+    - separates indices by class
+    - shuffles each class separately
+    - splits each class into n_splits parts
+    - builds each fold so that class proportions stay balanced
+    """
+    rng = np.random.default_rng(random_state)
+    classes = np.unique(y)
+
+    # For each class, build n_splits chunks
+    class_fold_chunks = {}
+
+    for cls in classes:
+        cls_indices = np.where(y == cls)[0]
+        rng.shuffle(cls_indices)
+
+        # Split this class's indices into n_splits nearly equal chunks
+        chunks = np.array_split(cls_indices, n_splits)
+        class_fold_chunks[cls] = chunks
+
+    # Build folds: fold i validation = chunk i from every class
+    folds = []
+    all_indices = np.arange(len(y))
+
+    for fold_idx in range(n_splits):
+        val_parts = [class_fold_chunks[cls][fold_idx] for cls in classes]
+        val_idx = np.concatenate(val_parts)
+        rng.shuffle(val_idx)
+
+        val_mask = np.zeros(len(y), dtype=bool)
+        val_mask[val_idx] = True
+        train_idx = all_indices[~val_mask]
+
+        folds.append((train_idx, val_idx))
+
+    return folds
+
+
+# ==========================================================
+# 6) ONE FULL 5-FOLD CV RUN FOR ONE PARAMETER COMBINATION
 # ==========================================================
 def cross_validate_knn_pca(
     x_dev_raw,
@@ -106,20 +206,18 @@ def cross_validate_knn_pca(
     random_state=42
 ):
     """
-    Run 5-fold CV for ONE combination of:
+    Run manual stratified 5-fold CV for one combination of:
       - k_neighbors
       - pca_components
 
-    Returns the mean and std of:
+    Returns mean/std of:
       - accuracy
       - macro F1
       - weighted F1
     """
-
-    # StratifiedKFold keeps class proportions balanced in each fold
-    skf = StratifiedKFold(
+    folds = stratified_kfold_indices(
+        y=y_dev,
         n_splits=n_splits,
-        shuffle=True,
         random_state=random_state
     )
 
@@ -127,32 +225,28 @@ def cross_validate_knn_pca(
     fold_macro_f1s = []
     fold_weighted_f1s = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(x_dev_raw, y_dev), start=1):
-        # Split raw development images into fold-train and fold-validation
+    for fold_idx, (train_idx, val_idx) in enumerate(folds, start=1):
         x_fold_train = x_dev_raw[train_idx]
         y_fold_train = y_dev[train_idx]
 
         x_fold_val = x_dev_raw[val_idx]
         y_fold_val = y_dev[val_idx]
 
-        # Apply PCA + scaling INSIDE this fold
         X_fold_train, X_fold_val = fit_transform_pca_fold(
             x_fold_train,
             x_fold_val,
             pca_components=pca_components
         )
 
-        # Train KNN
         model = KNNVectorized(k=k_neighbors)
         model.fit(X_fold_train, y_fold_train)
 
-        # Predict on fold-validation
         y_pred = model.predict(X_fold_val)
+        metrics = multiclass_metrics(y_fold_val, y_pred, n_classes=10)
 
-        # Compute evaluation metrics for this fold
-        acc = accuracy_score(y_fold_val, y_pred)
-        macro_f1 = f1_score(y_fold_val, y_pred, average="macro")
-        weighted_f1 = f1_score(y_fold_val, y_pred, average="weighted")
+        acc = metrics["accuracy"]
+        macro_f1 = metrics["macro_f1"]
+        weighted_f1 = metrics["weighted_f1"]
 
         fold_accuracies.append(acc)
         fold_macro_f1s.append(macro_f1)
@@ -165,7 +259,6 @@ def cross_validate_knn_pca(
             f"Weighted F1={weighted_f1:.4f}"
         )
 
-    # Return the average CV performance
     return {
         "accuracy_mean": np.mean(fold_accuracies),
         "accuracy_std": np.std(fold_accuracies),
@@ -177,21 +270,18 @@ def cross_validate_knn_pca(
 
 
 # ==========================================================
-# 5) MAIN TUNING FUNCTION
+# 7) MAIN TUNING FUNCTION
 # ==========================================================
 def tune_knn_with_5fold_cv():
     """
     Full tuning workflow:
-    1) Load multiclass MNIST using your preprocessing file
+    1) Load multiclass MNIST
     2) Combine train + validation into one development set
     3) Tune KNN over:
          - k
          - pca_components
-    4) Select the best configuration using macro F1
+    4) Select best configuration using macro F1
     """
-
-    # Load your multiclass data.
-    # We only need the RAW images here because PCA must be fit fold-by-fold.
     (
         X_train_dummy, y_train,
         X_val_dummy, y_val,
@@ -199,27 +289,23 @@ def tune_knn_with_5fold_cv():
         mean, std,
         x_train_raw, x_val_raw, x_test_raw
     ) = preprocess_mnist_multiclass(
-        method="pca",       # placeholder; raw images are what matter here
-        pca_components=75,  # placeholder
+        method="flatten",   # placeholder only; raw images are what matter here
+        pca_components=75,  # placeholder only
         val_ratio=0.15
     )
 
-    # Combine train + validation into one development set
-    # This is the data used for cross-validation.
     x_dev_raw = np.concatenate([x_train_raw, x_val_raw], axis=0)
     y_dev = np.concatenate([y_train, y_val], axis=0)
 
     print("Development set shape:", x_dev_raw.shape)
     print("Unique classes:", np.unique(y_dev))
 
-    # Hyperparameter search space
     k_values = [1, 3, 5, 7]
     pca_components_list = [50, 75, 100]
 
     all_results = []
     best_result = None
 
-    # Try all parameter combinations
     for pca_comp in pca_components_list:
         for k in k_values:
             print("\n" + "=" * 60)
@@ -247,21 +333,24 @@ def tune_knn_with_5fold_cv():
             print(f"Macro F1    : {cv_result['macro_f1_mean']:.4f} ± {cv_result['macro_f1_std']:.4f}")
             print(f"Weighted F1 : {cv_result['weighted_f1_mean']:.4f} ± {cv_result['weighted_f1_std']:.4f}")
 
-            # Select best model based on macro F1
-            if best_result is None:
+        # Select best model based on ACCURACY
+        if best_result is None:
+         best_result = row
+        else:
+         if row["accuracy_mean"] > best_result["accuracy_mean"]:
+          best_result = row
+         elif row["accuracy_mean"] == best_result["accuracy_mean"]:
+        # Tie-break 1: higher macro F1
+           if row["macro_f1_mean"] > best_result["macro_f1_mean"]:
+            best_result = row
+           elif row["macro_f1_mean"] == best_result["macro_f1_mean"]:
+            # Tie-break 2: smaller k
+            if row["k"] < best_result["k"]:
                 best_result = row
-            else:
-                if row["macro_f1_mean"] > best_result["macro_f1_mean"]:
-                    best_result = row
-                elif row["macro_f1_mean"] == best_result["macro_f1_mean"]:
-                    # Tie-break 1: smaller k
-                    if row["k"] < best_result["k"]:
-                        best_result = row
-                    # Tie-break 2: smaller PCA size
-                    elif row["k"] == best_result["k"] and row["pca_components"] < best_result["pca_components"]:
-                        best_result = row
+            # Tie-break 3: smaller PCA size
+            elif row["k"] == best_result["k"] and row["pca_components"] < best_result["pca_components"]:
+                best_result = row
 
-    # Print all results sorted by macro F1
     print("\n" + "=" * 75)
     print("ALL RESULTS SORTED BY MACRO F1")
     print("=" * 75)
@@ -277,7 +366,6 @@ def tune_knn_with_5fold_cv():
             f"WeightedF1={r['weighted_f1_mean']:.4f}±{r['weighted_f1_std']:.4f}"
         )
 
-    # Print best configuration
     print("\n" + "=" * 75)
     print("BEST CONFIGURATION")
     print("=" * 75)
@@ -291,7 +379,7 @@ def tune_knn_with_5fold_cv():
 
 
 # ==========================================================
-# 6) RUN THE TUNING
+# 8) RUN THE TUNING
 # ==========================================================
 if __name__ == "__main__":
     best_result, all_results = tune_knn_with_5fold_cv()
