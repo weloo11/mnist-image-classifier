@@ -2,12 +2,13 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 import sys
 import os
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
+
 from preprocessing2 import preprocess_mnist_multiclass
 
 
@@ -28,6 +29,7 @@ class KNNVectorized:
         self.y_train = y.astype(int)
 
     def predict(self, X):
+        X = X.astype(np.float32)
         predictions = []
 
         for i, x in enumerate(X):
@@ -40,8 +42,8 @@ class KNNVectorized:
             # Get the labels of those nearest neighbors
             k_labels = self.y_train[k_indices]
 
-            # Majority vote
-            pred = np.bincount(k_labels).argmax()
+            # Majority vote for multiclass labels
+            pred = np.bincount(k_labels, minlength=10).argmax()
             predictions.append(pred)
 
             if (i + 1) % 200 == 0:
@@ -66,18 +68,10 @@ def prepare_for_cnn(images, target_size=(96, 96)):
       3) repeat grayscale channel into 3 channels
       4) apply MobileNetV2 preprocess_input
     """
-    # Add channel dimension -> (N, 28, 28, 1)
     images = images[..., np.newaxis].astype(np.float32)
-
-    # Resize to CNN input size
     images_resized = tf.image.resize(images, target_size).numpy()
-
-    # Convert grayscale to RGB by repeating the single channel
     images_rgb = np.repeat(images_resized, 3, axis=-1)
-
-    # Apply MobileNetV2 preprocessing
     images_rgb = preprocess_input(images_rgb)
-
     return images_rgb.astype(np.float32)
 
 
@@ -94,33 +88,102 @@ def extract_cnn_features(feature_extractor, images, batch_size=128):
 
 
 # ==========================================================
-# 4) EVALUATION HELPER
+# 4) MANUAL MULTICLASS METRICS
 # ==========================================================
-def evaluate_multiclass(y_true, y_pred):
+def confusion_matrix_multiclass(y_true, y_pred, n_classes=10):
+    cm = np.zeros((n_classes, n_classes), dtype=int)
+
+    for t, p in zip(y_true, y_pred):
+        cm[int(t), int(p)] += 1
+
+    return cm
+
+
+def multiclass_metrics(y_true, y_pred, n_classes=10):
     """
-    Returns key multiclass metrics:
-      - accuracy
-      - macro F1
-      - weighted F1
-      - confusion matrix
+    Computes:
+    - accuracy
+    - macro precision / recall / f1
+    - weighted precision / recall / f1
+    - confusion matrix
     """
-    acc = accuracy_score(y_true, y_pred)
-    macro_f1 = f1_score(y_true, y_pred, average="macro")
-    weighted_f1 = f1_score(y_true, y_pred, average="weighted")
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix_multiclass(y_true, y_pred, n_classes=n_classes)
+
+    per_class_precision = []
+    per_class_recall = []
+    per_class_f1 = []
+    supports = []
+
+    for c in range(n_classes):
+        tp = cm[c, c]
+        fp = np.sum(cm[:, c]) - tp
+        fn = np.sum(cm[c, :]) - tp
+        support = np.sum(cm[c, :])
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+
+        per_class_precision.append(precision)
+        per_class_recall.append(recall)
+        per_class_f1.append(f1)
+        supports.append(support)
+
+    per_class_precision = np.array(per_class_precision, dtype=np.float64)
+    per_class_recall = np.array(per_class_recall, dtype=np.float64)
+    per_class_f1 = np.array(per_class_f1, dtype=np.float64)
+    supports = np.array(supports, dtype=np.float64)
+
+    accuracy = np.mean(y_true == y_pred)
+
+    # Macro averages
+    macro_precision = np.mean(per_class_precision)
+    macro_recall = np.mean(per_class_recall)
+    macro_f1 = np.mean(per_class_f1)
+
+    # Weighted averages
+    total_support = np.sum(supports)
+    weighted_precision = np.sum(per_class_precision * supports) / total_support
+    weighted_recall = np.sum(per_class_recall * supports) / total_support
+    weighted_f1 = np.sum(per_class_f1 * supports) / total_support
 
     return {
-        "accuracy": acc,
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
         "macro_f1": macro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
         "weighted_f1": weighted_f1,
         "confusion_matrix": cm
     }
 
 
+def print_results(title, y_true, y_pred, n_classes=10):
+    results = multiclass_metrics(y_true, y_pred, n_classes=n_classes)
+
+    print(f"\n--- {title} ---")
+    print(f"Accuracy            : {results['accuracy']:.4f}")
+    print(f"Macro Precision     : {results['macro_precision']:.4f}")
+    print(f"Macro Recall        : {results['macro_recall']:.4f}")
+    print(f"Macro F1-score      : {results['macro_f1']:.4f}")
+    print(f"Weighted Precision  : {results['weighted_precision']:.4f}")
+    print(f"Weighted Recall     : {results['weighted_recall']:.4f}")
+    print(f"Weighted F1-score   : {results['weighted_f1']:.4f}")
+
+    print("\nConfusion Matrix:")
+    print(results["confusion_matrix"])
+
+    return results
+
+
 # ==========================================================
 # 5) LOAD MULTICLASS DATA
 # ==========================================================
-# IMPORTANT:
 # We only need the RAW images here because the pretrained CNN
 # will do its own feature extraction.
 (
@@ -130,8 +193,8 @@ def evaluate_multiclass(y_true, y_pred):
     mean, std,
     x_train_raw, x_val_raw, x_test_raw
 ) = preprocess_mnist_multiclass(
-    method="flatten",        # placeholder only
-    pca_components=75,   # placeholder only
+    method="flatten",   # placeholder only
+    pca_components=75,  # placeholder only
     val_ratio=0.15
 )
 
@@ -144,8 +207,6 @@ print("Classes         :", np.unique(y_train))
 # ==========================================================
 # 6) PREPARE IMAGES FOR CNN
 # ==========================================================
-# MobileNetV2 needs larger RGB images, so we resize MNIST and
-# convert grayscale to 3 channels.
 print("\nPreparing train and validation images for CNN...", flush=True)
 
 x_train_cnn = prepare_for_cnn(x_train_raw, target_size=(96, 96))
@@ -158,8 +219,6 @@ print("CNN-ready val shape  :", x_val_cnn.shape)
 # ==========================================================
 # 7) LOAD PRETRAINED CNN AS FEATURE EXTRACTOR
 # ==========================================================
-# include_top=False removes the classifier head
-# pooling='avg' gives one compact feature vector per image
 print("\nLoading pretrained MobileNetV2...", flush=True)
 
 feature_extractor = MobileNetV2(
@@ -186,7 +245,7 @@ print("CNN feature val shape  :", X_val_cnn_features.shape)
 
 
 # ==========================================================
-# 9) OPTIONAL STANDARDIZATION OF CNN FEATURES
+# 9) STANDARDIZATION OF CNN FEATURES
 # ==========================================================
 # KNN is distance-based, so standardizing the extracted features helps.
 mean_cnn = np.mean(X_train_cnn_features, axis=0)
@@ -199,9 +258,8 @@ X_val_cnn_features = ((X_val_cnn_features - mean_cnn) / std_cnn).astype(np.float
 # ==========================================================
 # 10) TUNE K ON VALIDATION SET
 # ==========================================================
-# Since the data are nearly balanced across the 10 classes,
-# accuracy can be used as the primary selection criterion.
-# Macro F1 is also reported as a secondary check.
+# Accuracy is the primary selection criterion.
+# Macro F1 is used as a secondary check.
 k_values = [1, 3, 5, 7]
 
 best_result = None
@@ -216,7 +274,7 @@ for k in k_values:
     knn.fit(X_train_cnn_features, y_train)
 
     y_val_pred = knn.predict(X_val_cnn_features)
-    result = evaluate_multiclass(y_val, y_val_pred)
+    result = multiclass_metrics(y_val, y_val_pred, n_classes=10)
 
     all_results.append({
         "k": k,
@@ -280,15 +338,15 @@ print(best_result["confusion_matrix"])
 
 
 # ==========================================================
-# 12) OPTIONAL PER-CLASS REPORT ON VALIDATION
+# 12) PRINT DETAILED RESULTS FOR THE BEST K
 # ==========================================================
-# This helps you understand which digits are hardest for CNN+KNN.
-print("\nDetailed classification report for the best validation result:\n")
-
 best_knn = KNNVectorized(k=best_result["k"])
 best_knn.fit(X_train_cnn_features, y_train)
 best_y_val_pred = best_knn.predict(X_val_cnn_features)
 
-print(classification_report(y_val, best_y_val_pred, digits=4))
-
-
+print_results(
+    title=f"BEST CNN+KNN VALIDATION RESULTS — k={best_result['k']}",
+    y_true=y_val,
+    y_pred=best_y_val_pred,
+    n_classes=10
+)
