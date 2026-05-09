@@ -75,29 +75,40 @@ def print_metrics(split, metrics, show_conf_matrix=False, show_per_class=False):
         print_confusion_matrix(m["confusion_matrix"])
 
 
-def tune_var_smoothing(X_train, y_train, X_val, y_val,
-                       candidates=None):
-    from gaussian_nb import GaussianNaiveBayes
+def extract_cnn_features(x_raw, batch_size=256):
+    """
+    Extract features from raw 28x28 MNIST images using pretrained MobileNetV2.
+    - Resizes to 96x96 (MobileNetV2 minimum) and converts grayscale to RGB.
+    - Returns 1280-dim global-average-pooled features per image.
+    MobileNetV2 is chosen because it is lightweight, fast, and already available
+    through tensorflow.keras which the project uses for MNIST loading.
+    """
+    import tensorflow as tf
 
-    if candidates is None:
-        candidates = [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3]
+    MobileNetV2     = tf.keras.applications.MobileNetV2
+    preprocess_input = tf.keras.applications.mobilenet_v2.preprocess_input
 
-    best_f1 = -1.0
-    best_vs = candidates[0]
+    print(f"    Resizing {x_raw.shape[0]} images to 96x96 RGB ...")
+    x_4d = x_raw[..., np.newaxis]                          # (n,28,28,1)
+    x_resized = tf.image.resize(x_4d, [96, 96]).numpy()   # (n,96,96,1)
+    x_rgb = np.repeat(x_resized, 3, axis=-1)               # (n,96,96,3)
+    # preprocess_input expects [0,255] and scales internally to [-1,1]
+    x_rgb = preprocess_input(x_rgb * 255.0)
 
-    print("  Hyperparameter tuning (var_smoothing on validation set):")
-    for vs in candidates:
-        model = GaussianNaiveBayes(var_smoothing=vs)
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_val)
-        m = multiclass_evaluate(y_val, y_pred)
-        print(f"    var_smoothing={vs:.0e}  ->  acc={m['accuracy']:.4f}  f1={m['f1']:.4f}")
-        if m["f1"] > best_f1:
-            best_f1 = m["f1"]
-            best_vs = vs
+    print("    Loading pretrained MobileNetV2 (ImageNet weights) ...")
+    base_model = MobileNetV2(
+        input_shape=(96, 96, 3),
+        include_top=False,
+        pooling="avg",
+        weights="imagenet",
+    )
+    base_model.trainable = False
 
-    print(f"  Best var_smoothing: {best_vs:.0e}  (val F1={best_f1:.4f})")
-    return best_vs
+    print("    Extracting features ...")
+    features = base_model.predict(x_rgb, batch_size=batch_size, verbose=0)
+    print(f"    CNN features shape: {features.shape}")
+    return features   # (n, 1280)
+
 
 
 def kfold_cross_validate(X, y, k=5, var_smoothing=1e-8):
@@ -131,12 +142,11 @@ def kfold_cross_validate(X, y, k=5, var_smoothing=1e-8):
 
 
 def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method, output_dir="."):
-    """Train on increasing fractions of training data; plot train vs val F1."""
     from gaussian_nb import GaussianNaiveBayes
 
     fractions = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
     n = len(y_train)
-    train_f1s, val_f1s, sizes = [], [], []
+    train_accs, val_accs = [], []
 
     for frac in fractions:
         size = max(10, int(n * frac))
@@ -145,90 +155,88 @@ def plot_learning_curves(X_train, y_train, X_val, y_val, var_smoothing, method, 
         model = GaussianNaiveBayes(var_smoothing=var_smoothing)
         model.fit(X_sub, y_sub)
 
-        train_f1s.append(multiclass_evaluate(y_sub,   model.predict(X_sub))["f1"])
-        val_f1s.append(  multiclass_evaluate(y_val,   model.predict(X_val))["f1"])
-        sizes.append(size)
+        train_accs.append(multiclass_evaluate(y_sub, model.predict(X_sub))["accuracy"])
+        val_accs.append(  multiclass_evaluate(y_val, model.predict(X_val))["accuracy"])
 
+    gap = train_accs[-1] - val_accs[-1]
+    if val_accs[-1] < 0.60:
+        diagnosis = "Underfitting — both curves low (high bias)"
+    elif gap > 0.10:
+        diagnosis = "Overfitting — large train/val gap (high variance)"
+    else:
+        diagnosis = "Good fit — train and val curves are close"
+
+    pct_labels = [int(f * 100) for f in fractions]
     plt.figure(figsize=(8, 5))
-    plt.plot(sizes, train_f1s, marker="o", label="Train F1")
-    plt.plot(sizes, val_f1s,   marker="s", label="Val F1")
-    plt.xlabel("Training set size")
-    plt.ylabel("Macro F1")
-    plt.title(f"Learning Curves — {method.upper()} (var_smoothing={var_smoothing:.0e})")
+    plt.plot(pct_labels, train_accs, marker="o", label="Train Accuracy")
+    plt.plot(pct_labels, val_accs,   marker="s", label="Val Accuracy")
+    plt.xlabel("% of Training Data")
+    plt.ylabel("Accuracy")
+    plt.title(f"Learning Curves — {method.upper()}\n{diagnosis}")
+    plt.xticks(pct_labels)
     plt.legend()
     plt.tight_layout()
     fname = f"{output_dir}/nb2_learning_curve_{method}.png"
     plt.savefig(fname)
     plt.close()
     print(f"  Learning curve saved -> {fname}")
-
-    gap = train_f1s[-1] - val_f1s[-1]
-    if val_f1s[-1] < 0.60:
-        diagnosis = "Underfitting (high bias) — both curves low"
-    elif gap > 0.10:
-        diagnosis = "Overfitting (high variance) — large train/val gap"
-    else:
-        diagnosis = "Good fit — train and val curves close"
-    print(f"  Diagnosis: {diagnosis}  (train F1={train_f1s[-1]:.4f}, val F1={val_f1s[-1]:.4f})")
-    return {"train_f1": train_f1s, "val_f1": val_f1s, "sizes": sizes, "diagnosis": diagnosis}
-
-
-def bias_variance_analysis(X_train, y_train, X_val, y_val, method, output_dir="."):
-    """Sweep var_smoothing over a wide range; plot train vs val F1 to show bias-variance tradeoff."""
-    from gaussian_nb import GaussianNaiveBayes
-
-    smoothing_values = [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0]
-    train_f1s, val_f1s = [], []
-
-    print("  Bias-Variance Analysis (sweeping var_smoothing):")
-    for vs in smoothing_values:
-        model = GaussianNaiveBayes(var_smoothing=vs)
-        model.fit(X_train, y_train)
-        tr_f1  = multiclass_evaluate(y_train, model.predict(X_train))["f1"]
-        val_f1 = multiclass_evaluate(y_val,   model.predict(X_val))["f1"]
-        train_f1s.append(tr_f1)
-        val_f1s.append(val_f1)
-        print(f"    vs={vs:.0e}  train_f1={tr_f1:.4f}  val_f1={val_f1:.4f}")
-
-    log_vs = [np.log10(vs) for vs in smoothing_values]
-    plt.figure(figsize=(8, 5))
-    plt.plot(log_vs, train_f1s, marker="o", label="Train F1")
-    plt.plot(log_vs, val_f1s,   marker="s", label="Val F1")
-    plt.xlabel("log10(var_smoothing)")
-    plt.ylabel("Macro F1")
-    plt.title(f"Bias-Variance Analysis — {method.upper()}")
-    plt.legend()
-    plt.tight_layout()
-    fname = f"{output_dir}/nb2_bias_variance_{method}.png"
-    plt.savefig(fname)
-    plt.close()
-    print(f"  Bias-variance plot saved -> {fname}")
-    return {"smoothing_values": smoothing_values, "train_f1": train_f1s, "val_f1": val_f1s}
+    print(f"  Diagnosis: {diagnosis}  (train={train_accs[-1]:.4f}, val={val_accs[-1]:.4f})")
+    return {"train_acc": train_accs, "val_acc": val_accs, "fractions": fractions, "diagnosis": diagnosis}
 
 
 def run_method(preprocessing, method, pca_components, k_folds=5, output_dir="."):
     from gaussian_nb import GaussianNaiveBayes
+    from sklearn.decomposition import PCA
 
-    result = preprocessing.preprocess_mnist_multiclass(
-        method=method,
-        pca_components=pca_components,
-        val_ratio=0.15
-    )
-    X_train, y_train, X_val, y_val, X_test, y_test = result[:6]
+    if method == "cnn":
+        # Load split via flatten (cheap) — we only need raw images and labels
+        result = preprocessing.preprocess_mnist_multiclass(
+            method="flatten", pca_components=pca_components, val_ratio=0.15
+        )
+        _, y_train, _, y_val, _, y_test = result[:6]
+        x_train_raw, x_val_raw, x_test_raw = result[8], result[9], result[10]
+
+        print("  Extracting MobileNetV2 features (train) ...")
+        X_train = extract_cnn_features(x_train_raw)
+        print("  Extracting MobileNetV2 features (val) ...")
+        X_val   = extract_cnn_features(x_val_raw)
+        print("  Extracting MobileNetV2 features (test) ...")
+        X_test  = extract_cnn_features(x_test_raw)
+
+        # PCA to decorrelate CNN features — GNB assumes feature independence
+        print(f"  Applying PCA({pca_components}) to decorrelate CNN features ...")
+        pca = PCA(n_components=pca_components)
+        X_train = pca.fit_transform(X_train)
+        X_val   = pca.transform(X_val)
+        X_test  = pca.transform(X_test)
+        var_kept = np.sum(pca.explained_variance_ratio_)
+        print(f"  PCA variance retained: {var_kept:.4f}")
+
+        # Standardize
+        mean = np.mean(X_train, axis=0)
+        std  = np.std(X_train,  axis=0) + 1e-8
+        X_train = ((X_train - mean) / std).astype(np.float32)
+        X_val   = ((X_val   - mean) / std).astype(np.float32)
+        X_test  = ((X_test  - mean) / std).astype(np.float32)
+    else:
+        result = preprocessing.preprocess_mnist_multiclass(
+            method=method, pca_components=pca_components, val_ratio=0.15
+        )
+        X_train, y_train, X_val, y_val, X_test, y_test = result[:6]
 
     print(f"  Shapes -> Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
-    best_vs = tune_var_smoothing(X_train, y_train, X_val, y_val)
+    VAR_SMOOTHING = 1e-9
 
     X_cv = np.concatenate([X_train, X_val], axis=0)
     y_cv = np.concatenate([y_train, y_val], axis=0)
 
-    cv_results = kfold_cross_validate(X_cv, y_cv, k=k_folds, var_smoothing=best_vs)
+    cv_results = kfold_cross_validate(X_cv, y_cv, k=k_folds, var_smoothing=VAR_SMOOTHING)
     print(f"\n  {k_folds}-Fold Cross-Validation (mean ± std):")
     for key, (mean, std) in cv_results.items():
         print(f"    {key:<10}: {mean:.4f} ± {std:.4f}")
 
-    model = GaussianNaiveBayes(var_smoothing=best_vs)
+    model = GaussianNaiveBayes(var_smoothing=VAR_SMOOTHING)
     model.fit(X_cv, y_cv)
 
     print("\n  Final evaluation:")
@@ -241,17 +249,11 @@ def run_method(preprocessing, method, pca_components, k_folds=5, output_dir=".")
                       show_conf_matrix=is_test,
                       show_per_class=is_test)
 
-    results["CV"]      = cv_results
-    results["best_vs"] = best_vs
+    results["CV"] = cv_results
 
     print("\n  --- Learning Curves ---")
     results["learning_curves"] = plot_learning_curves(
-        X_train, y_train, X_val, y_val, best_vs, method, output_dir
-    )
-
-    print("\n  --- Bias-Variance Analysis ---")
-    results["bias_variance"] = bias_variance_analysis(
-        X_train, y_train, X_val, y_val, method, output_dir
+        X_train, y_train, X_val, y_val, VAR_SMOOTHING, method, output_dir
     )
 
     return results
@@ -259,7 +261,7 @@ def run_method(preprocessing, method, pca_components, k_folds=5, output_dir=".")
 
 def main():
     PCA_COMPONENTS = 100
-    METHODS        = ["flatten", "pca", "hog"]
+    METHODS        = ["flatten", "pca", "hog", "cnn"]
     K_FOLDS        = 5
     OUTPUT_DIR     = "phase2_nb_outputs"
 
@@ -280,16 +282,15 @@ def main():
         print(f"{'='*60}")
         summary[method] = run_method(preprocessing, method, PCA_COMPONENTS, K_FOLDS, OUTPUT_DIR)
 
-    print(f"\n{'='*72}")
+    print(f"\n{'='*65}")
     print("  SUMMARY — Phase 2 Multiclass Gaussian Naive Bayes (10 Classes)")
-    print(f"{'='*72}")
-    print(f"  {'Method':<10} {'Best VS':>10} {'CV Acc (mean±std)':>22} {'Test Acc':>10} {'Test F1':>10}")
-    print(f"  {'-'*65}")
+    print(f"{'='*65}")
+    print(f"  {'Method':<10} {'CV Acc (mean±std)':>22} {'Test Acc':>10} {'Test F1':>10}")
+    print(f"  {'-'*55}")
     for method, results in summary.items():
         test            = results["Test"]
         cv_mean, cv_std = results["CV"]["accuracy"]
-        best_vs         = results["best_vs"]
-        print(f"  {method:<10} {best_vs:>10.0e}"
+        print(f"  {method:<10}"
               f" {f'{cv_mean:.4f}±{cv_std:.4f}':>22}"
               f" {test['accuracy']:>10.4f}"
               f" {test['f1']:>10.4f}")
