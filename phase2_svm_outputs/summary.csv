@@ -1,0 +1,2 @@
+Model,Feature Method,Improvement 1,Improvement 2,Improvement 3,Best Learning Rate,Diagnosis,Validation Accuracy,Validation Macro F1,Test Accuracy,Test Macro F1
+Multiclass One-vs-Rest Linear SVM,VGG16 CNN Features,Pretrained CNN Feature Extraction,K-Fold Cross-Validation,Overfitting/Underfitting Diagnosis using Plotted Learning Curves,0.02,Good Fit,0.9575319622012229,0.9569261330920769,0.9577,0.9573110554183571

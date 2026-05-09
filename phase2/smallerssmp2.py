@@ -1,7 +1,9 @@
-# ============================================================
-# Phase 2 — Compact Multiclass Linear SVM from Scratch
-# VGG16 CNN Features + One-vs-Rest SVM
-# ============================================================
+# Phase 2 — Multiclass Linear SVM from Scratch
+# Improvements:
+# 1) VGG16 CNN Feature Extraction
+# 2) K-Fold Cross-Validation
+# 3) Overfitting / Underfitting Diagnosis using Plotted Learning Curves
+# NOTE: No L1/L2 regularization is used in this code.
 
 import os
 import gc
@@ -15,50 +17,42 @@ from keras.applications import VGG16
 from keras.applications.vgg16 import preprocess_input
 
 
-# ============================================================
-# 1. Settings
-# ============================================================
-
 N_CLASSES = 10
 IMAGE_SIZE = 64
 VAL_RATIO = 0.15
 K_FOLDS = 3
 OUTPUT_DIR = "phase2_svm_outputs"
+SEED = 42
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-np.random.seed(42)
+np.random.seed(SEED)
 
 
-# ============================================================
-# 2. Load and split MNIST
-# ============================================================
-
-def load_mnist():
+def load_mnist_data():
     (x_train, y_train), (x_test, y_test) = mnist.load_data()
 
-    x_train = x_train.astype(np.float32)
-    x_test = x_test.astype(np.float32)
+    return (
+        x_train.astype(np.float32),
+        y_train.astype(np.int32),
+        x_test.astype(np.float32),
+        y_test.astype(np.int32)
+    )
 
-    y_train = y_train.astype(np.int32)
-    y_test = y_test.astype(np.int32)
 
-    return x_train, y_train, x_test, y_test
-
-
-def stratified_train_val_split(X, y, val_ratio=0.15, seed=42):
+def stratified_split(X, y, val_ratio=0.15, seed=42):
     np.random.seed(seed)
 
     train_idx = []
     val_idx = []
 
     for cls in np.unique(y):
-        cls_idx = np.where(y == cls)[0]
-        np.random.shuffle(cls_idx)
+        idx = np.where(y == cls)[0]
+        np.random.shuffle(idx)
 
-        val_size = int(len(cls_idx) * val_ratio)
+        n_val = int(len(idx) * val_ratio)
 
-        val_idx.extend(cls_idx[:val_size])
-        train_idx.extend(cls_idx[val_size:])
+        val_idx.extend(idx[:n_val])
+        train_idx.extend(idx[n_val:])
 
     train_idx = np.array(train_idx)
     val_idx = np.array(val_idx)
@@ -69,19 +63,12 @@ def stratified_train_val_split(X, y, val_ratio=0.15, seed=42):
     return X[train_idx], y[train_idx], X[val_idx], y[val_idx]
 
 
-# ============================================================
-# 3. VGG16 Feature Extraction
-# ============================================================
-
-def prepare_batch_for_vgg16(batch, image_size=64):
-    """
-    MNIST images are 28x28 grayscale.
-    VGG16 needs image_size x image_size x 3 RGB images.
-    """
+def prepare_vgg_batch(batch):
     batch = batch[..., np.newaxis]
     batch = np.repeat(batch, 3, axis=-1)
-    batch = tf.image.resize(batch, (image_size, image_size)).numpy()
+    batch = tf.image.resize(batch, (IMAGE_SIZE, IMAGE_SIZE)).numpy()
     batch = preprocess_input(batch)
+
     return batch
 
 
@@ -98,23 +85,21 @@ def extract_vgg16_features(images, batch_size=128):
     extractor.trainable = False
 
     features = []
-    total = len(images)
 
-    for start in range(0, total, batch_size):
-        end = min(start + batch_size, total)
+    for start in range(0, len(images), batch_size):
+        end = min(start + batch_size, len(images))
 
-        batch = images[start:end]
-        batch_prepared = prepare_batch_for_vgg16(batch, IMAGE_SIZE)
+        batch = prepare_vgg_batch(images[start:end])
 
-        batch_features = extractor.predict(
-            batch_prepared,
+        feats = extractor.predict(
+            batch,
             batch_size=32,
             verbose=0
         )
 
-        features.append(batch_features.astype(np.float32))
+        features.append(feats.astype(np.float32))
 
-        print(f"Extracted CNN features: {end}/{total}", end="\r")
+        print(f"Extracted CNN features: {end}/{len(images)}", end="\r")
 
     print()
 
@@ -124,9 +109,22 @@ def extract_vgg16_features(images, batch_size=128):
     return np.vstack(features).astype(np.float32)
 
 
-def standardize_features(X_train, X_val, X_test):
-    mean = np.mean(X_train, axis=0).astype(np.float32)
-    std = np.std(X_train, axis=0).astype(np.float32)
+def standardize_train_val(X_train, X_val):
+    mean = X_train.mean(axis=0).astype(np.float32)
+    std = X_train.std(axis=0).astype(np.float32)
+
+    std[std == 0] = 1.0
+
+    X_train = ((X_train - mean) / std).astype(np.float32)
+    X_val = ((X_val - mean) / std).astype(np.float32)
+
+    return X_train, X_val
+
+
+def standardize_all(X_train, X_val, X_test):
+    mean = X_train.mean(axis=0).astype(np.float32)
+    std = X_train.std(axis=0).astype(np.float32)
+
     std[std == 0] = 1.0
 
     X_train = ((X_train - mean) / std).astype(np.float32)
@@ -136,21 +134,6 @@ def standardize_features(X_train, X_val, X_test):
     return X_train, X_val, X_test
 
 
-def standardize_train_val(X_train, X_val):
-    mean = np.mean(X_train, axis=0).astype(np.float32)
-    std = np.std(X_train, axis=0).astype(np.float32)
-    std[std == 0] = 1.0
-
-    X_train = ((X_train - mean) / std).astype(np.float32)
-    X_val = ((X_val - mean) / std).astype(np.float32)
-
-    return X_train, X_val
-
-
-# ============================================================
-# 4. Metrics From Scratch
-# ============================================================
-
 def accuracy(y_true, y_pred):
     return np.mean(y_true == y_pred)
 
@@ -158,78 +141,57 @@ def accuracy(y_true, y_pred):
 def confusion_matrix(y_true, y_pred, n_classes=10):
     cm = np.zeros((n_classes, n_classes), dtype=int)
 
-    for t, p in zip(y_true, y_pred):
-        cm[int(t), int(p)] += 1
+    for true_label, pred_label in zip(y_true, y_pred):
+        cm[int(true_label), int(pred_label)] += 1
 
     return cm
 
 
-def precision_recall_f1(y_true, y_pred, n_classes=10):
-    cm = confusion_matrix(y_true, y_pred, n_classes)
-
-    precisions = []
-    recalls = []
-    f1s = []
-
-    for cls in range(n_classes):
-        tp = cm[cls, cls]
-        fp = np.sum(cm[:, cls]) - tp
-        fn = np.sum(cm[cls, :]) - tp
-
-        precision = tp / (tp + fp) if tp + fp > 0 else 0.0
-        recall = tp / (tp + fn) if tp + fn > 0 else 0.0
-
-        if precision + recall == 0:
-            f1 = 0.0
-        else:
-            f1 = 2 * precision * recall / (precision + recall)
-
-        precisions.append(precision)
-        recalls.append(recall)
-        f1s.append(f1)
-
-    return np.mean(precisions), np.mean(recalls), np.mean(f1s), cm
-
-
-def per_class_metrics(y_true, y_pred, n_classes=10):
+def metrics(y_true, y_pred, n_classes=10, as_dataframe=False):
     cm = confusion_matrix(y_true, y_pred, n_classes)
 
     rows = []
 
     for cls in range(n_classes):
         tp = cm[cls, cls]
-        fp = np.sum(cm[:, cls]) - tp
-        fn = np.sum(cm[cls, :]) - tp
+        fp = cm[:, cls].sum() - tp
+        fn = cm[cls, :].sum() - tp
 
         precision = tp / (tp + fp) if tp + fp > 0 else 0.0
         recall = tp / (tp + fn) if tp + fn > 0 else 0.0
 
-        if precision + recall == 0:
-            f1 = 0.0
-        else:
+        if precision + recall > 0:
             f1 = 2 * precision * recall / (precision + recall)
+        else:
+            f1 = 0.0
 
         rows.append([cls, precision, recall, f1])
 
-    return pd.DataFrame(rows, columns=["Class", "Precision", "Recall", "F1-score"])
+    df = pd.DataFrame(
+        rows,
+        columns=["Class", "Precision", "Recall", "F1-score"]
+    )
 
+    if as_dataframe:
+        return df, cm
 
-# ============================================================
-# 5. Binary Linear SVM From Scratch
-# ============================================================
+    macro_precision = df["Precision"].mean()
+    macro_recall = df["Recall"].mean()
+    macro_f1 = df["F1-score"].mean()
+
+    return macro_precision, macro_recall, macro_f1, cm
+
 
 class LinearSVMFromScratch:
     def __init__(
         self,
         learning_rate=0.01,
-        lambda_param=0.0005,
         n_epochs=15,
         batch_size=512,
         lr_decay=0.95,
         patience=5
     ):
         self.learning_rate = learning_rate
-        self.lambda_param = lambda_param
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.lr_decay = lr_decay
@@ -245,14 +207,12 @@ class LinearSVMFromScratch:
         self.best_b = None
         self.best_val_loss = np.inf
 
-    def compute_class_weights(self, y):
-        n = len(y)
-
+    def class_weights(self, y):
         n_pos = np.sum(y == 1)
         n_neg = np.sum(y == -1)
 
-        w_pos = n / (2 * n_pos)
-        w_neg = n / (2 * n_neg)
+        w_pos = len(y) / (2 * n_pos)
+        w_neg = len(y) / (2 * n_neg)
 
         return w_pos, w_neg
 
@@ -263,8 +223,7 @@ class LinearSVMFromScratch:
         sample_weights = np.where(y == 1, w_pos, w_neg)
         hinge = np.maximum(0, 1 - margins)
 
-        loss = self.lambda_param * np.dot(self.w, self.w)
-        loss += np.mean(sample_weights * hinge)
+        loss = np.mean(sample_weights * hinge)
 
         return float(loss)
 
@@ -274,7 +233,7 @@ class LinearSVMFromScratch:
         self.w = np.zeros(n_features, dtype=np.float32)
         self.b = 0.0
 
-        w_pos, w_neg = self.compute_class_weights(y)
+        w_pos, w_neg = self.class_weights(y)
 
         lr = self.learning_rate
         no_improve = 0
@@ -282,37 +241,36 @@ class LinearSVMFromScratch:
         for epoch in range(self.n_epochs):
             idx = np.random.permutation(n_samples)
 
-            X_shuffled = X[idx]
-            y_shuffled = y[idx]
+            X_s = X[idx]
+            y_s = y[idx]
 
             for start in range(0, n_samples, self.batch_size):
                 end = start + self.batch_size
 
-                X_batch = X_shuffled[start:end]
-                y_batch = y_shuffled[start:end]
+                X_b = X_s[start:end]
+                y_b = y_s[start:end]
 
-                scores = X_batch @ self.w + self.b
-                margins = y_batch * scores
+                scores = X_b @ self.w + self.b
+                margins = y_b * scores
 
-                sample_weights = np.where(y_batch == 1, w_pos, w_neg)
+                sample_weights = np.where(y_b == 1, w_pos, w_neg)
                 active = margins < 1
 
                 if np.any(active):
-                    X_active = X_batch[active]
-                    y_active = y_batch[active]
+                    X_active = X_b[active]
+                    y_active = y_b[active]
                     weights_active = sample_weights[active]
 
-                    grad_w_hinge = -np.mean(
+                    grad_w = -np.mean(
                         (weights_active * y_active)[:, None] * X_active,
                         axis=0
                     )
 
                     grad_b = -np.mean(weights_active * y_active)
-                else:
-                    grad_w_hinge = np.zeros_like(self.w)
-                    grad_b = 0.0
 
-                grad_w = 2 * self.lambda_param * self.w + grad_w_hinge
+                else:
+                    grad_w = np.zeros_like(self.w)
+                    grad_b = 0.0
 
                 self.w -= lr * grad_w
                 self.b -= lr * grad_b
@@ -329,6 +287,7 @@ class LinearSVMFromScratch:
                     self.best_w = self.w.copy()
                     self.best_b = self.b
                     no_improve = 0
+
                 else:
                     no_improve += 1
 
@@ -348,32 +307,41 @@ class LinearSVMFromScratch:
         return np.where(self.decision_function(X) >= 0, 1, -1)
 
 
-# ============================================================
-# 6. Multiclass One-vs-Rest SVM
-# ============================================================
-
 class MulticlassOVRSVM:
     def __init__(
         self,
         n_classes=10,
         learning_rate=0.01,
-        lambda_param=0.0005,
         n_epochs=15,
         batch_size=512,
         lr_decay=0.95,
         patience=5
     ):
         self.n_classes = n_classes
-        self.learning_rate = learning_rate
-        self.lambda_param = lambda_param
-        self.n_epochs = n_epochs
-        self.batch_size = batch_size
-        self.lr_decay = lr_decay
-        self.patience = patience
+
+        self.params = {
+            "learning_rate": learning_rate,
+            "n_epochs": n_epochs,
+            "batch_size": batch_size,
+            "lr_decay": lr_decay,
+            "patience": patience
+        }
 
         self.models = []
         self.avg_train_losses = []
         self.avg_val_losses = []
+
+    @staticmethod
+    def average_curves(curves):
+        curves = [curve for curve in curves if len(curve) > 0]
+
+        if len(curves) == 0:
+            return []
+
+        min_len = min(len(curve) for curve in curves)
+        curves = np.array([curve[:min_len] for curve in curves])
+
+        return np.mean(curves, axis=0)
 
     def fit(self, X, y, X_val=None, y_val=None):
         self.models = []
@@ -391,34 +359,16 @@ class MulticlassOVRSVM:
             else:
                 y_val_binary = None
 
-            model = LinearSVMFromScratch(
-                learning_rate=self.learning_rate,
-                lambda_param=self.lambda_param,
-                n_epochs=self.n_epochs,
-                batch_size=self.batch_size,
-                lr_decay=self.lr_decay,
-                patience=self.patience
-            )
-
+            model = LinearSVMFromScratch(**self.params)
             model.fit(X, y_binary, X_val, y_val_binary)
 
             self.models.append(model)
+
             train_curves.append(model.train_losses)
             val_curves.append(model.val_losses)
 
         self.avg_train_losses = self.average_curves(train_curves)
         self.avg_val_losses = self.average_curves(val_curves)
-
-    def average_curves(self, curves):
-        curves = [c for c in curves if len(c) > 0]
-
-        if len(curves) == 0:
-            return []
-
-        min_len = min(len(c) for c in curves)
-        curves = np.array([c[:min_len] for c in curves])
-
-        return np.mean(curves, axis=0)
 
     def decision_function(self, X):
         scores = [model.decision_function(X) for model in self.models]
@@ -427,10 +377,6 @@ class MulticlassOVRSVM:
     def predict(self, X):
         return np.argmax(self.decision_function(X), axis=1)
 
-
-# ============================================================
-# 7. Cross-Validation
-# ============================================================
 
 def stratified_kfold_indices(y, k=3, seed=42):
     np.random.seed(seed)
@@ -441,12 +387,23 @@ def stratified_kfold_indices(y, k=3, seed=42):
         idx = np.where(y == cls)[0]
         np.random.shuffle(idx)
 
-        split = np.array_split(idx, k)
+        split_classes = np.array_split(idx, k)
 
-        for i in range(k):
-            folds[i].extend(split[i])
+        for fold_index, split in enumerate(split_classes):
+            folds[fold_index].extend(split)
 
     return [np.array(fold) for fold in folds]
+
+
+def make_svm(config):
+    return MulticlassOVRSVM(
+        n_classes=N_CLASSES,
+        learning_rate=config["learning_rate"],
+        n_epochs=config["n_epochs"],
+        batch_size=config["batch_size"],
+        lr_decay=config["lr_decay"],
+        patience=config["patience"]
+    )
 
 
 def cross_validate_svm(X, y, param_grid, k=3):
@@ -463,31 +420,35 @@ def cross_validate_svm(X, y, param_grid, k=3):
 
         for i in range(k):
             val_idx = folds[i]
-            train_idx = np.concatenate([folds[j] for j in range(k) if j != i])
-
-            X_tr, y_tr = X[train_idx], y[train_idx]
-            X_v, y_v = X[val_idx], y[val_idx]
-
-            X_tr, X_v = standardize_train_val(X_tr, X_v)
-
-            model = MulticlassOVRSVM(
-                n_classes=N_CLASSES,
-                learning_rate=config["learning_rate"],
-                lambda_param=config["lambda_param"],
-                n_epochs=config["n_epochs"],
-                batch_size=config["batch_size"],
-                lr_decay=config["lr_decay"],
-                patience=config["patience"]
+            train_idx = np.concatenate(
+                [folds[j] for j in range(k) if j != i]
             )
 
-            model.fit(X_tr, y_tr, X_v, y_v)
+            X_train_fold = X[train_idx]
+            y_train_fold = y[train_idx]
 
-            y_pred = model.predict(X_v)
-            _, _, f1, _ = precision_recall_f1(y_v, y_pred, N_CLASSES)
+            X_val_fold = X[val_idx]
+            y_val_fold = y[val_idx]
 
-            fold_scores.append(f1)
+            X_train_fold, X_val_fold = standardize_train_val(
+                X_train_fold,
+                X_val_fold
+            )
 
-            print(f"Fold {i + 1}/{k} | Macro F1 = {f1:.4f}")
+            model = make_svm(config)
+            model.fit(X_train_fold, y_train_fold, X_val_fold, y_val_fold)
+
+            y_pred = model.predict(X_val_fold)
+
+            _, _, fold_f1, _ = metrics(
+                y_val_fold,
+                y_pred,
+                N_CLASSES
+            )
+
+            fold_scores.append(fold_f1)
+
+            print(f"Fold {i + 1}/{k} | Macro F1 = {fold_f1:.4f}")
 
         avg_f1 = np.mean(fold_scores)
 
@@ -503,39 +464,182 @@ def cross_validate_svm(X, y, param_grid, k=3):
     return best_config, best_score, pd.DataFrame(results)
 
 
-# ============================================================
-# 8. Plotting Functions
-# ============================================================
+def save_csv(df, filename):
+    path = os.path.join(OUTPUT_DIR, filename)
+    df.to_csv(path, index=False)
+    print("Saved:", path)
 
-def plot_learning_curves(model):
-    plt.figure(figsize=(8, 5))
 
-    plt.plot(model.avg_train_losses, label="Train Loss")
-    plt.plot(model.avg_val_losses, label="Validation Loss")
+def plot_over_under_fitting(model):
+    train_losses = np.array(model.avg_train_losses)
+    val_losses = np.array(model.avg_val_losses)
+
+    epochs = np.arange(1, len(train_losses) + 1)
+
+    gap = val_losses - train_losses
+
+    best_epoch = epochs[np.argmin(val_losses)]
+    best_val_loss = np.min(val_losses)
+
+    underfit_end = max(1, len(epochs) // 3)
+
+    overfit_epochs = epochs[gap > 0.10]
+
+    plt.figure(figsize=(10, 6))
+
+    plt.plot(
+        epochs,
+        train_losses,
+        marker="o",
+        label="Training Loss"
+    )
+
+    plt.plot(
+        epochs,
+        val_losses,
+        marker="o",
+        label="Validation Loss"
+    )
+
+    plt.axvspan(
+        epochs[0],
+        epochs[underfit_end - 1],
+        alpha=0.15,
+        label="Underfitting Region"
+    )
+
+    if len(overfit_epochs) > 0:
+        overfit_start = overfit_epochs[0]
+
+        plt.axvspan(
+            overfit_start,
+            epochs[-1],
+            alpha=0.15,
+            label="Possible Overfitting Region"
+        )
+
+    plt.axvline(
+        best_epoch,
+        linestyle="--",
+        label=f"Best Fit Epoch = {best_epoch}"
+    )
+
+    plt.scatter(
+        best_epoch,
+        best_val_loss,
+        s=100,
+        zorder=5
+    )
+
+    plt.text(
+        best_epoch,
+        best_val_loss,
+        "  Best Fit",
+        fontsize=10,
+        verticalalignment="bottom"
+    )
 
     plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Learning Curves — One-vs-Rest Linear SVM")
+    plt.ylabel("Average Hinge Loss")
+    plt.title("Overfitting and Underfitting Diagnosis Using Learning Curves")
     plt.legend()
     plt.grid(True)
+    plt.tight_layout()
 
-    path = os.path.join(OUTPUT_DIR, "learning_curves.png")
+    path = os.path.join(OUTPUT_DIR, "overfitting_underfitting_plot.png")
+
     plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close()
 
     print("Saved:", path)
 
 
+def plot_generalization_gap(model):
+    train_losses = np.array(model.avg_train_losses)
+    val_losses = np.array(model.avg_val_losses)
+
+    epochs = np.arange(1, len(train_losses) + 1)
+
+    gap = val_losses - train_losses
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(
+        epochs,
+        gap,
+        marker="o",
+        label="Validation Loss - Training Loss"
+    )
+
+    plt.axhline(
+        y=0.10,
+        linestyle="--",
+        label="Overfitting Warning Threshold"
+    )
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss Gap")
+    plt.title("Generalization Gap Curve")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    path = os.path.join(OUTPUT_DIR, "generalization_gap_curve.png")
+
+    plt.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print("Saved:", path)
+
+
+def diagnose_from_graphs(model, train_pred, val_pred, y_train, y_val):
+    _, _, train_f1, _ = metrics(y_train, train_pred, N_CLASSES)
+    _, _, val_f1, _ = metrics(y_val, val_pred, N_CLASSES)
+
+    train_losses = np.array(model.avg_train_losses)
+    val_losses = np.array(model.avg_val_losses)
+
+    f1_gap = train_f1 - val_f1
+    loss_gap = val_losses[-1] - train_losses[-1]
+
+    if train_f1 < 0.85 and val_f1 < 0.85:
+        diagnosis = "Underfitting"
+
+    elif f1_gap > 0.05 and loss_gap > 0.10:
+        diagnosis = "Overfitting"
+
+    else:
+        diagnosis = "Good Fit"
+
+    df = pd.DataFrame([
+        {
+            "train_macro_f1": train_f1,
+            "validation_macro_f1": val_f1,
+            "f1_gap": f1_gap,
+            "final_train_loss": train_losses[-1],
+            "final_validation_loss": val_losses[-1],
+            "loss_gap": loss_gap,
+            "diagnosis": diagnosis
+        }
+    ])
+
+    save_csv(df, "overfitting_underfitting_diagnosis.csv")
+
+    return df
+
+
 def plot_confusion_matrix(cm, title="Confusion Matrix"):
     plt.figure(figsize=(9, 7))
 
     plt.imshow(cm)
+
     plt.title(title)
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
     plt.colorbar()
 
     labels = np.arange(cm.shape[0])
+
     plt.xticks(labels, labels)
     plt.yticks(labels, labels)
 
@@ -543,7 +647,11 @@ def plot_confusion_matrix(cm, title="Confusion Matrix"):
 
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
-            color = "white" if cm[i, j] > threshold else "black"
+            if cm[i, j] > threshold:
+                color = "white"
+            else:
+                color = "black"
+
             plt.text(
                 j,
                 i,
@@ -557,6 +665,7 @@ def plot_confusion_matrix(cm, title="Confusion Matrix"):
     plt.tight_layout()
 
     path = os.path.join(OUTPUT_DIR, "test_confusion_matrix_heatmap.png")
+
     plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -569,395 +678,239 @@ def plot_per_class_metrics(df):
 
     plt.figure(figsize=(10, 5))
 
-    plt.bar(x - width, df["Precision"], width, label="Precision")
-    plt.bar(x, df["Recall"], width, label="Recall")
-    plt.bar(x + width, df["F1-score"], width, label="F1-score")
+    plt.bar(
+        x - width,
+        df["Precision"],
+        width,
+        label="Precision"
+    )
+
+    plt.bar(
+        x,
+        df["Recall"],
+        width,
+        label="Recall"
+    )
+
+    plt.bar(
+        x + width,
+        df["F1-score"],
+        width,
+        label="F1-score"
+    )
 
     plt.xlabel("Digit Class")
     plt.ylabel("Score")
     plt.title("Per-Class Precision, Recall, and F1-score")
+
     plt.xticks(x)
     plt.ylim(0, 1.05)
+
     plt.legend()
     plt.grid(axis="y")
     plt.tight_layout()
 
     path = os.path.join(OUTPUT_DIR, "per_class_metrics.png")
+
     plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close()
 
     print("Saved:", path)
 
 
-def save_sample_predictions(x_test_raw, y_true, y_pred, n_samples=25):
-    np.random.seed(42)
-
-    indices = np.random.choice(len(x_test_raw), n_samples, replace=False)
-
-    grid_size = int(np.sqrt(n_samples))
-
-    plt.figure(figsize=(10, 10))
-
-    for i, idx in enumerate(indices):
-        plt.subplot(grid_size, grid_size, i + 1)
-        plt.imshow(x_test_raw[idx], cmap="gray")
-
-        true_label = y_true[idx]
-        pred_label = y_pred[idx]
-
-        title = f"T:{true_label} P:{pred_label}"
-        plt.title(title, fontsize=9)
-        plt.axis("off")
-
-    plt.suptitle("Sample Test Predictions — True vs Predicted", fontsize=14)
-    plt.tight_layout()
-
-    path = os.path.join(OUTPUT_DIR, "sample_predictions.png")
-    plt.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-    print("Saved:", path)
+def print_results(title, acc, precision, recall, f1):
+    print(f"\n{title}")
+    print("=" * 40)
+    print(f"Accuracy        : {acc:.4f}")
+    print(f"Macro Precision : {precision:.4f}")
+    print(f"Macro Recall    : {recall:.4f}")
+    print(f"Macro F1        : {f1:.4f}")
 
 
-# ============================================================
-# 9. Bias-Variance / Regularization Analysis
-# ============================================================
+def main():
+    x_train_full, y_train_full, x_test, y_test = load_mnist_data()
 
-def bias_variance_analysis(X_train, y_train, X_val, y_val, base_config):
-    lambda_values = [
-        0.0,
-        0.0001,
-        0.001,
-        0.01,
-        0.1,
-        1.0,
-        10.0,
-        50.0,
-        100.0,
-        500.0,
-        1000.0
+    x_train, y_train, x_val, y_val = stratified_split(
+        x_train_full,
+        y_train_full,
+        VAL_RATIO
+    )
+
+    print("Train:", x_train.shape, y_train.shape)
+    print("Val  :", x_val.shape, y_val.shape)
+    print("Test :", x_test.shape, y_test.shape)
+
+    print("\nExtracting VGG16 features...")
+
+    X_train_cnn = extract_vgg16_features(x_train)
+    X_val_cnn = extract_vgg16_features(x_val)
+    X_test_cnn = extract_vgg16_features(x_test)
+
+    X_train, X_val, X_test = standardize_all(
+        X_train_cnn,
+        X_val_cnn,
+        X_test_cnn
+    )
+
+    del X_train_cnn
+    del X_val_cnn
+    del X_test_cnn
+    gc.collect()
+
+    param_grid = [
+        {
+            "learning_rate": 0.005,
+            "n_epochs": 15,
+            "batch_size": 512,
+            "lr_decay": 0.95,
+            "patience": 5
+        },
+        {
+            "learning_rate": 0.01,
+            "n_epochs": 15,
+            "batch_size": 512,
+            "lr_decay": 0.95,
+            "patience": 5
+        },
+        {
+            "learning_rate": 0.02,
+            "n_epochs": 15,
+            "batch_size": 512,
+            "lr_decay": 0.95,
+            "patience": 5
+        }
     ]
 
-    print("\nRegularization / Bias-Variance Analysis")
-    print("=" * 80)
-    print(f"{'Lambda':>10} {'Train F1':>12} {'Val F1':>12} {'Gap':>10} {'Diagnosis':>15}")
-    print("-" * 80)
-
-    rows = []
-
-    for lam in lambda_values:
-        model = MulticlassOVRSVM(
-            n_classes=N_CLASSES,
-            learning_rate=base_config["learning_rate"],
-            lambda_param=lam,
-            n_epochs=base_config["n_epochs"],
-            batch_size=base_config["batch_size"],
-            lr_decay=base_config["lr_decay"],
-            patience=base_config["patience"]
-        )
-
-        model.fit(X_train, y_train, X_val, y_val)
-
-        train_pred = model.predict(X_train)
-        val_pred = model.predict(X_val)
-
-        _, _, train_f1, _ = precision_recall_f1(y_train, train_pred, N_CLASSES)
-        _, _, val_f1, _ = precision_recall_f1(y_val, val_pred, N_CLASSES)
-
-        gap = train_f1 - val_f1
-
-        if train_f1 < 0.95 and val_f1 < 0.95:
-            diagnosis = "Underfitting"
-        elif gap > 0.05:
-            diagnosis = "Overfitting"
-        else:
-            diagnosis = "Good fit"
-
-        rows.append([lam, train_f1, val_f1, gap, diagnosis])
-
-        print(
-            f"{lam:>10.4f} "
-            f"{train_f1:>12.4f} "
-            f"{val_f1:>12.4f} "
-            f"{gap:>10.4f} "
-            f"{diagnosis:>15}"
-        )
-
-    print("-" * 80)
-
-    df = pd.DataFrame(
-        rows,
-        columns=["lambda", "train_macro_f1", "val_macro_f1", "gap", "diagnosis"]
+    best_config, best_cv_f1, cv_results = cross_validate_svm(
+        X_train,
+        y_train,
+        param_grid,
+        k=K_FOLDS
     )
 
-    df.to_csv(
-        os.path.join(OUTPUT_DIR, "bias_variance_analysis.csv"),
-        index=False
+    print("\nCross-validation results:")
+    print(cv_results.to_string(index=False))
+
+    print("\nBest config:", best_config)
+    print("Best CV Macro F1:", best_cv_f1)
+
+    save_csv(cv_results, "cross_validation_results.csv")
+
+    print("\nTraining final model...")
+
+    final_model = make_svm(best_config)
+
+    final_model.fit(
+        X_train,
+        y_train,
+        X_val,
+        y_val
     )
 
-    plot_df = df[df["lambda"] > 0]
+    train_pred = final_model.predict(X_train)
+    y_val_pred = final_model.predict(X_val)
+    y_test_pred = final_model.predict(X_test)
 
-    plt.figure(figsize=(8, 5))
-    plt.semilogx(
-        plot_df["lambda"],
-        plot_df["train_macro_f1"],
-        "o-",
-        label="Train Macro F1"
+    plot_over_under_fitting(final_model)
+    plot_generalization_gap(final_model)
+
+    diagnosis_df = diagnose_from_graphs(
+        final_model,
+        train_pred,
+        y_val_pred,
+        y_train,
+        y_val
     )
-    plt.semilogx(
-        plot_df["lambda"],
-        plot_df["val_macro_f1"],
-        "o-",
-        label="Validation Macro F1"
+
+    val_precision, val_recall, val_f1, _ = metrics(
+        y_val,
+        y_val_pred,
+        N_CLASSES
     )
 
-    plt.xlabel("Lambda λ — log scale")
-    plt.ylabel("Macro F1")
-    plt.title("Regularization Effect — L2 Lambda vs Macro F1")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
+    val_acc = accuracy(y_val, y_val_pred)
 
-    path = os.path.join(OUTPUT_DIR, "regularization_effect.png")
-    plt.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close()
+    print_results(
+        "Validation Results",
+        val_acc,
+        val_precision,
+        val_recall,
+        val_f1
+    )
 
-    print("Saved:", path)
+    test_precision, test_recall, test_f1, test_cm = metrics(
+        y_test,
+        y_test_pred,
+        N_CLASSES
+    )
 
-    return df
+    test_acc = accuracy(y_test, y_test_pred)
 
+    print_results(
+        "Final Test Results",
+        test_acc,
+        test_precision,
+        test_recall,
+        test_f1
+    )
 
-# ============================================================
-# 10. Main
-# ============================================================
+    print("\nConfusion Matrix:")
+    print(test_cm)
 
-x_train_full, y_train_full, x_test, y_test = load_mnist()
+    save_csv(
+        pd.DataFrame(test_cm),
+        "test_confusion_matrix.csv"
+    )
 
-x_train, y_train, x_val, y_val = stratified_train_val_split(
-    x_train_full,
-    y_train_full,
-    VAL_RATIO
-)
+    plot_confusion_matrix(
+        test_cm,
+        title="Test Confusion Matrix — VGG16 + One-vs-Rest Linear SVM"
+    )
 
-print("Train:", x_train.shape, y_train.shape)
-print("Val  :", x_val.shape, y_val.shape)
-print("Test :", x_test.shape, y_test.shape)
+    per_class_df, _ = metrics(
+        y_test,
+        y_test_pred,
+        N_CLASSES,
+        as_dataframe=True
+    )
 
+    print("\nPer-class metrics:")
+    print(per_class_df.to_string(index=False))
 
-# ============================================================
-# VGG16 Feature Extraction
-# ============================================================
+    save_csv(
+        per_class_df,
+        "per_class_metrics.csv"
+    )
 
-print("\nExtracting VGG16 features...")
+    plot_per_class_metrics(per_class_df)
 
-X_train_cnn = extract_vgg16_features(x_train)
-X_val_cnn = extract_vgg16_features(x_val)
-X_test_cnn = extract_vgg16_features(x_test)
+    summary = pd.DataFrame([
+        {
+            "Model": "Multiclass One-vs-Rest Linear SVM",
+            "Feature Method": "VGG16 CNN Features",
+            "Improvement 1": "Pretrained CNN Feature Extraction",
+            "Improvement 2": "K-Fold Cross-Validation",
+            "Improvement 3": "Overfitting/Underfitting Diagnosis using Plotted Learning Curves",
+            "Best Learning Rate": best_config["learning_rate"],
+            "Diagnosis": diagnosis_df.loc[0, "diagnosis"],
+            "Validation Accuracy": val_acc,
+            "Validation Macro F1": val_f1,
+            "Test Accuracy": test_acc,
+            "Test Macro F1": test_f1
+        }
+    ])
 
-X_train, X_val, X_test = standardize_features(
-    X_train_cnn,
-    X_val_cnn,
-    X_test_cnn
-)
+    save_csv(
+        summary,
+        "summary.csv"
+    )
 
-del X_train_cnn, X_val_cnn, X_test_cnn
-gc.collect()
+    print("\nSummary:")
+    print(summary.to_string(index=False))
 
-
-# ============================================================
-# Cross-Validation
-# ============================================================
-
-param_grid = [
-    {
-        "learning_rate": 0.005,
-        "lambda_param": 0.0001,
-        "n_epochs": 15,
-        "batch_size": 512,
-        "lr_decay": 0.95,
-        "patience": 5
-    },
-    {
-        "learning_rate": 0.01,
-        "lambda_param": 0.0005,
-        "n_epochs": 15,
-        "batch_size": 512,
-        "lr_decay": 0.95,
-        "patience": 5
-    },
-    {
-        "learning_rate": 0.02,
-        "lambda_param": 0.001,
-        "n_epochs": 15,
-        "batch_size": 512,
-        "lr_decay": 0.95,
-        "patience": 5
-    }
-]
-
-best_config, best_cv_f1, cv_results = cross_validate_svm(
-    X_train,
-    y_train,
-    param_grid,
-    k=K_FOLDS
-)
-
-print("\nCross-validation results:")
-print(cv_results.to_string(index=False))
-
-print("\nBest config:", best_config)
-print("Best CV Macro F1:", best_cv_f1)
-
-cv_results.to_csv(
-    os.path.join(OUTPUT_DIR, "cross_validation_results.csv"),
-    index=False
-)
+    print("\nDone.")
+    print("Outputs saved in:", OUTPUT_DIR)
 
 
-# ============================================================
-# Final Model Training
-# ============================================================
-
-print("\nTraining final model...")
-
-final_model = MulticlassOVRSVM(
-    n_classes=N_CLASSES,
-    learning_rate=best_config["learning_rate"],
-    lambda_param=best_config["lambda_param"],
-    n_epochs=best_config["n_epochs"],
-    batch_size=best_config["batch_size"],
-    lr_decay=best_config["lr_decay"],
-    patience=best_config["patience"]
-)
-
-final_model.fit(X_train, y_train, X_val, y_val)
-
-plot_learning_curves(final_model)
-
-
-# ============================================================
-# Validation Evaluation
-# ============================================================
-
-y_val_pred = final_model.predict(X_val)
-
-val_precision, val_recall, val_f1, val_cm = precision_recall_f1(
-    y_val,
-    y_val_pred,
-    N_CLASSES
-)
-
-val_acc = accuracy(y_val, y_val_pred)
-
-print("\nValidation Results")
-print("=" * 40)
-print(f"Accuracy       : {val_acc:.4f}")
-print(f"Macro Precision: {val_precision:.4f}")
-print(f"Macro Recall   : {val_recall:.4f}")
-print(f"Macro F1       : {val_f1:.4f}")
-
-
-# ============================================================
-# Test Evaluation
-# ============================================================
-
-y_test_pred = final_model.predict(X_test)
-
-test_precision, test_recall, test_f1, test_cm = precision_recall_f1(
-    y_test,
-    y_test_pred,
-    N_CLASSES
-)
-
-test_acc = accuracy(y_test, y_test_pred)
-
-print("\nFinal Test Results")
-print("=" * 40)
-print(f"Accuracy       : {test_acc:.4f}")
-print(f"Macro Precision: {test_precision:.4f}")
-print(f"Macro Recall   : {test_recall:.4f}")
-print(f"Macro F1       : {test_f1:.4f}")
-
-print("\nConfusion Matrix:")
-print(test_cm)
-
-pd.DataFrame(test_cm).to_csv(
-    os.path.join(OUTPUT_DIR, "test_confusion_matrix.csv"),
-    index=False
-)
-
-plot_confusion_matrix(
-    test_cm,
-    title="Test Confusion Matrix — VGG16 + One-vs-Rest SVM"
-)
-
-
-# ============================================================
-# Per-Class Metrics
-# ============================================================
-
-per_class_df = per_class_metrics(y_test, y_test_pred, N_CLASSES)
-
-per_class_df.to_csv(
-    os.path.join(OUTPUT_DIR, "per_class_metrics.csv"),
-    index=False
-)
-
-print("\nPer-class metrics:")
-print(per_class_df.to_string(index=False))
-
-plot_per_class_metrics(per_class_df)
-
-
-# ============================================================
-# Sample Prediction Photos
-# ============================================================
-
-save_sample_predictions(
-    x_test_raw=x_test,
-    y_true=y_test,
-    y_pred=y_test_pred,
-    n_samples=25
-)
-
-
-# ============================================================
-# Bias-Variance / Regularization Analysis
-# ============================================================
-
-bias_variance_df = bias_variance_analysis(
-    X_train,
-    y_train,
-    X_val,
-    y_val,
-    best_config
-)
-
-
-# ============================================================
-# Summary
-# ============================================================
-
-summary = pd.DataFrame([
-    {
-        "Model": "Multiclass One-vs-Rest Linear SVM",
-        "Feature Method": "VGG16 CNN Features",
-        "Best Learning Rate": best_config["learning_rate"],
-        "Best Lambda": best_config["lambda_param"],
-        "Validation Accuracy": val_acc,
-        "Validation Macro F1": val_f1,
-        "Test Accuracy": test_acc,
-        "Test Macro F1": test_f1
-    }
-])
-
-summary.to_csv(
-    os.path.join(OUTPUT_DIR, "summary.csv"),
-    index=False
-)
-
-print("\nSummary:")
-print(summary.to_string(index=False))
-
-print("\nDone.")
-print("Outputs saved in:", OUTPUT_DIR)
+if __name__ == "__main__":
+    main()
