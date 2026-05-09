@@ -7,9 +7,6 @@ sys.path.append(parent_dir)
 from preprocessing2 import preprocess_mnist_multiclass
 
 
-# ==========================================================
-# VECTORIZED KNN — MULTICLASS
-# ==========================================================
 class KNNVectorized:
     def __init__(self, k=1):
         self.k = k
@@ -52,8 +49,6 @@ def confusion_matrix_multiclass(y_true, y_pred, n_classes=10):
         cm[int(t), int(p)] += 1
 
     return cm
-
-
 def multiclass_metrics(y_true, y_pred, n_classes=10):
     """
     Computes:
@@ -118,8 +113,6 @@ def multiclass_metrics(y_true, y_pred, n_classes=10):
         "weighted_f1": weighted_f1,
         "confusion_matrix": cm
     }
-
-
 def print_results(title, y_true, y_pred, n_classes=10):
     results = multiclass_metrics(y_true, y_pred, n_classes=n_classes)
 
@@ -179,10 +172,6 @@ def run_knn_baseline(k=1, pca_components=50, val_ratio=0.15):
 
     return results
 
-
-# ==========================================================
-# MAIN
-# ==========================================================
 if __name__ == "__main__":
     # New tuned baseline from 5-fold CV
     k = 1
