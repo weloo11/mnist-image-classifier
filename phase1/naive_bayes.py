@@ -6,21 +6,6 @@ import sys
 import numpy as np
 
 
-def ensure_preprocessing():
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            import preprocessing
-        return preprocessing
-    except Exception as e:
-        print("preprocessing import failed:", e)
-        print("Installing required packages: tensorflow, scikit-image, scikit-learn")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install",
-            "tensorflow", "scikit-image", "scikit-learn"
-        ])
-        importlib.invalidate_caches()
-        with contextlib.redirect_stdout(io.StringIO()):
-            return importlib.import_module("preprocessing")
 
 
 def print_confusion_matrix(tp, tn, fp, fn):
